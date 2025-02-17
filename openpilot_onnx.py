@@ -3,6 +3,7 @@ import json
 import numpy as np
 import onnxruntime
 import pandas as pd
+import os
 
 from matplotlib import pyplot as plt
 
@@ -35,10 +36,18 @@ def seperate_points_and_std_values(df):
 
 	return points, std
 
-def main():
+def main(traffic_value, desire_value, flipped):
 	model = "supercombo.onnx"
-	
-	cap = cv2.VideoCapture('data/cropped_plats.mp4')
+	image_folder = 'data/images/'
+	if flipped:
+		output_folder = f'data_flipped/plot_images_{traffic_value}_{desire_value}/'
+	else:
+		output_folder = f'data/plot_images_{traffic_value}_{desire_value}/'
+		
+	## velocity_folder = f'data_flipped/velocity_plots_{traffic_value}_{desire_value}/'
+	os.makedirs(output_folder, exist_ok=True)
+	images = sorted([img for img in os.listdir(image_folder)])
+	## cap = cv2.VideoCapture('data/cropped_plats.mp4')
 	parsed_images = []
 
 	width = 512
@@ -79,13 +88,17 @@ def main():
 # 	rnn_end_idx = rnn_start_idx + 908
 	
 	session = onnxruntime.InferenceSession(model, None)
-	while(cap.isOpened()):
+	for image in images:
+		img_path = os.path.join(image_folder, image)
+		frame = cv2.imread(img_path)
 
-		ret, frame = cap.read()
-		if (ret == False):
-			break
+		if frame is None:
+			print(F"Unable to read {img_path}")
+			continue
 
 		if frame is not None:
+			if flipped:
+				frame = cv2.flip(frame, 1)
 			img = cv2.resize(frame, dim)
 			img_yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV_I420)
 			parsed = parse_image(img_yuv)
@@ -109,11 +122,14 @@ def main():
 			traffic_convention = session.get_inputs()[3].name
 			output_name = session.get_outputs()[0].name
 			
-			desire_data = np.array([0]).astype('float32')
-			desire_data.resize((1,8))
+			##desire_data = np.array([0]).astype('float32')
+			##desire_data.resize((1,8))
+			desire_data = np.zeros((1, 8), dtype = np.float32)
+			desire_data[0, desire_value] = 1
 			
-			traffic_convention_data = np.array([0]).astype('float32')
-			traffic_convention_data.resize((1,512))
+			##traffic_convention_data = np.array([0]).astype('float32')
+			##traffic_convention_data.resize((1,512))
+			traffic_convention_data = np.full((1, 512), traffic_value, dtype = np.float32)
 			
 			initial_state_data = np.array([0]).astype('float32')
 			initial_state_data.resize((1,2))
@@ -126,7 +142,7 @@ def main():
 
 			res = np.array(result)
 
-			# plan = res[:,:,plan_start_idx:plan_end_idx]
+			plan = res[:,:,plan_start_idx:plan_end_idx]
 			lanes = res[:,:,lanes_start_idx:lanes_end_idx]
 			# lane_lines_prob = res[:,:,lane_lines_prob_start_idx:lane_lines_prob_end_idx]
 			lane_road = res[:,:,road_start_idx:road_end_idx]
@@ -176,32 +192,39 @@ def main():
 
 			middle = points_ll_t2.add(points_l_t, fill_value=0) / 2
 
-			plt.scatter(middle, X_IDXS, color = "g")
-
+			plt.scatter(middle, X_IDXS, color = "g", s = 1)
+			plt.ylim(0, 100)
 # 			plt.scatter(points_ll_t, X_IDXS, color = "b", marker = "*")
-			plt.scatter(points_ll_t2, X_IDXS, color = "y")
+			plt.scatter(points_ll_t2, X_IDXS, color = "y", s = 1)
 
-			plt.scatter(points_l_t, X_IDXS, color = "y")
+			plt.scatter(points_l_t, X_IDXS, color = "y", s = 1)
 # 			plt.scatter(points_l_t2, X_IDXS, color = "y", marker = "*")
 
-			plt.scatter(points_road_t, X_IDXS, color = "r")
-			plt.scatter(points_road_t2, X_IDXS, color = "r")
+			plt.scatter(points_road_t, X_IDXS, color = "r", s = 1)
+			plt.scatter(points_road_t2, X_IDXS, color = "r", s = 1)
 
 			plt.title("Raod lines")
 			plt.xlabel("red - road lines | green - predicted path | yellow - lane lines")
 			plt.ylabel("Range")
-			plt.show()
-			plt.pause(0.1)
+			plot_filename = os.path.join(output_folder, f"plot_{os.path.splitext(image)[0]}.png")
+			plt.savefig(plot_filename)
 			plt.clf()
 
+			
+			##plt.quiver(X_IDXS, middle, velocity, angular_velocity, scale = 50, color = 'b')
+			##plot_filename = os.path.join(velocity_folder, f"plot_{os.path.splitext(image)[0]}.png")
+			##plt.savefig(plot_filename)
+			##plt.clf()
+
 		frame = cv2.resize(frame, (900, 500))
-		cv2.imshow('frame', frame)
+		##cv2.imshow('frame', frame)
 
 		if cv2.waitKey(1) & 0xFF == ord('q'):
 			break
 
-	cap.release()
 	cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-	main()
+	for x in range(1, 3):
+		for y in range(8):
+			main(x, y, True)
