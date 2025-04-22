@@ -28,6 +28,56 @@ def parse_image(frame):
 
 	return parsed
 
+def get_probabilities(probabilities):
+	x = np.exp(probabilities) / np.sum(np.exp(probabilities))
+	return x
+
+def get_mean_velocity(plan, probabiltiies):
+	x_vels = []
+	y_vels = []
+	z_vels = []
+
+	for i in range(3, 495, 15):
+		total = 0
+		for j in range(5):
+			total += plan[:,:,3 + 991*j + i].item() * probabiltiies[j]
+		x_vels.append(total)
+	for i in range(4, 495, 15):
+		total = 0
+		for j in range(5):
+			total += plan[:,:,4 + 991*j + i].item() * probabiltiies[j]
+		y_vels.append(total)
+	for i in range(5, 495, 15):
+		total = 0
+		for j in range(5):
+			total += plan[:, :, 5 + 991*j + i].item() * probabiltiies[j]
+		z_vels.append(total)
+	
+	return x_vels, y_vels, z_vels
+
+def get_mean_position(plan, probabiltiies):
+	x_pos = []
+	y_pos = []
+	z_pos = []
+
+	for i in range(0, 495, 15):
+		total = 0
+		for j in range(5):
+			total += plan[:,:,991*j + i].item() * probabiltiies[j]
+		x_pos.append(total)
+	for i in range(1, 495, 15):
+		total = 0
+		for j in range(5):
+			total += plan[:,:,1 + 991*j + i].item() * probabiltiies[j]
+		y_pos.append(total)
+	for i in range(2, 495, 15):
+		total = 0
+		for j in range(5):
+			total += plan[:,:,2 + 991*j + i].item() * probabiltiies[j]
+		z_pos.append(total)
+	
+	return x_pos, y_pos, z_pos
+
 def seperate_points_and_std_values(df):
 	points = df.iloc[lambda x: x.index % 2 == 0]
 	std = df.iloc[lambda x: x.index % 2 != 0]
@@ -39,6 +89,8 @@ def seperate_points_and_std_values(df):
 def main(traffic_value, desire_value, flipped):
 	model = "supercombo.onnx"
 	image_folder = 'data/images/'
+	velocity_folder = 'data/velocity/'
+	position_folder = 'data/position'
 	if flipped:
 		output_folder = f'data_flipped/plot_images_{traffic_value}_{desire_value}/'
 	else:
@@ -129,10 +181,13 @@ def main(traffic_value, desire_value, flipped):
 			
 			##traffic_convention_data = np.array([0]).astype('float32')
 			##traffic_convention_data.resize((1,512))
-			traffic_convention_data = np.full((1, 512), traffic_value, dtype = np.float32)
+			initial_state_data = np.zeros((1, 2), dtype = np.float32)
+			initial_state_data[0, traffic_value] = 1
+			##traffic_convention_data = np.full((1, 512), traffic_value, dtype = np.float32)
 			
-			initial_state_data = np.array([0]).astype('float32')
-			initial_state_data.resize((1,2))
+			##initial_state_data = np.array([0, 0]).astype('float32').reshape((1, 2))
+			##initial_state_data.resize((1,2))
+			traffic_convention_data = np.zeros((1, 512), dtype = np.float32)
 
 			result = session.run([output_name], {input_imgs: data,
 												desire: desire_data,
@@ -143,6 +198,7 @@ def main(traffic_value, desire_value, flipped):
 			res = np.array(result)
 
 			plan = res[:,:,plan_start_idx:plan_end_idx]
+			probabilities = get_probabilities(np.array([plan[:,:,990].item(), plan[:,:,1981].item(), plan[:,:,2972].item(), plan[:,:,3963].item(), plan[:,:,4954].item()]))
 			lanes = res[:,:,lanes_start_idx:lanes_end_idx]
 			# lane_lines_prob = res[:,:,lane_lines_prob_start_idx:lane_lines_prob_end_idx]
 			lane_road = res[:,:,road_start_idx:road_end_idx]
@@ -192,29 +248,45 @@ def main(traffic_value, desire_value, flipped):
 
 			middle = points_ll_t2.add(points_l_t, fill_value=0) / 2
 
-			plt.scatter(middle, X_IDXS, color = "g", s = 1)
-			plt.ylim(0, 100)
-# 			plt.scatter(points_ll_t, X_IDXS, color = "b", marker = "*")
-			plt.scatter(points_ll_t2, X_IDXS, color = "y", s = 1)
+			# plt.scatter(middle, X_IDXS, color = "g", s = 1)
+			# plt.ylim(0, 100)
+			# plt.scatter(points_ll_t, X_IDXS, color = "b", marker = "*")
+			# plt.scatter(points_ll_t2, X_IDXS, color = "y", s = 1)
 
-			plt.scatter(points_l_t, X_IDXS, color = "y", s = 1)
-# 			plt.scatter(points_l_t2, X_IDXS, color = "y", marker = "*")
+			# plt.scatter(points_l_t, X_IDXS, color = "y", s = 1)
+			# ##plt.scatter(points_l_t2, X_IDXS, color = "y", marker = "*")
 
-			plt.scatter(points_road_t, X_IDXS, color = "r", s = 1)
-			plt.scatter(points_road_t2, X_IDXS, color = "r", s = 1)
+			# plt.scatter(points_road_t, X_IDXS, color = "r", s = 1)
+			# plt.scatter(points_road_t2, X_IDXS, color = "r", s = 1)
 
-			plt.title("Raod lines")
-			plt.xlabel("red - road lines | green - predicted path | yellow - lane lines")
-			plt.ylabel("Range")
-			plot_filename = os.path.join(output_folder, f"plot_{os.path.splitext(image)[0]}.png")
+			# plt.title("Raod lines")
+			# plt.xlabel("red - road lines | green - predicted path | yellow - lane lines")
+			# plt.ylabel("Range")
+			# plot_filename = os.path.join(output_folder, f"plot_{os.path.splitext(image)[0]}.png")
+			# plt.savefig(plot_filename)
+			# plt.clf()
+
+			x_vel, y_vel, z_vel = get_mean_velocity(plan, probabilities)
+			x_pos, y_pos, z_pos = get_mean_position(plan, probabilities)
+			y_pos = [y * -1 for y in y_pos]
+			y_vel = [y * -1 for y in y_vel]
+			plt.quiver(y_pos, X_IDXS, y_vel, x_vel, scale=5)
+			plt.ylim(0, 10)
+			plt.xlim(-5, 5)
+			plt.xlabel("Y Position")
+			plt.ylabel("X Position")
+			plot_filename = os.path.join(velocity_folder, f"plot_{os.path.splitext(image)[0]}.png")
 			plt.savefig(plot_filename)
 			plt.clf()
 
-			
-			##plt.quiver(X_IDXS, middle, velocity, angular_velocity, scale = 50, color = 'b')
-			##plot_filename = os.path.join(velocity_folder, f"plot_{os.path.splitext(image)[0]}.png")
-			##plt.savefig(plot_filename)
-			##plt.clf()
+			plt.scatter(y_pos, X_IDXS)
+			plt.ylim(0, 10)
+			plt.xlim(-5, 5)
+			plt.xlabel("Y Position")
+			plt.ylabel("X Position")
+			plot_filename = os.path.join(position_folder, f"plot_{os.path.splitext(image)[0]}.png")
+			plt.savefig(plot_filename)
+			plt.clf()
 
 		frame = cv2.resize(frame, (900, 500))
 		##cv2.imshow('frame', frame)
@@ -223,8 +295,10 @@ def main(traffic_value, desire_value, flipped):
 			break
 
 	cv2.destroyAllWindows()
+	print(f"Done")
 
 if __name__ == "__main__":
-	for x in range(1, 3):
-		for y in range(8):
-			main(x, y, True)
+	for x in range(1):
+		for y in range(1):
+			main(x, y, False)
+			print("done")
