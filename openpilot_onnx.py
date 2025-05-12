@@ -1,8 +1,14 @@
 import cv2
 import json
 import numpy as np
-import onnxruntime
+try:
+	import onnxruntime
+	import onnxruntime.tools.add_openvino_win_libs as utils
+	utils.add_openvino_libs_to_path()
+except ImportError as e:
+	raise ImportError()
 import pandas as pd
+import tqdm
 import os
 
 from matplotlib import pyplot as plt
@@ -88,7 +94,7 @@ def seperate_points_and_std_values(df):
 
 def main(traffic_value, desire_value, flipped):
 	model = "supercombo.onnx"
-	image_folder = 'data/images/'
+	image_folder = "../Data 2024-10-26-15-29-40/images/"
 	velocity_folder = 'data/velocity/'
 	position_folder = 'data/position'
 	if flipped:
@@ -138,9 +144,11 @@ def main(traffic_value, desire_value, flipped):
 # 	
 # 	rnn_start_idx = pose_end_idx
 # 	rnn_end_idx = rnn_start_idx + 908
+
+	images = images[:250] # 
 	
 	session = onnxruntime.InferenceSession(model, None)
-	for image in images:
+	for I, image in tqdm.tqdm(enumerate(images), total=len(images)):
 		img_path = os.path.join(image_folder, image)
 		frame = cv2.imread(img_path)
 
@@ -276,6 +284,8 @@ def main(traffic_value, desire_value, flipped):
 			plt.xlabel("Y Position")
 			plt.ylabel("X Position")
 			plot_filename = os.path.join(velocity_folder, f"plot_{os.path.splitext(image)[0]}.png")
+			if not os.path.exists(velocity_folder):
+				os.makedirs(velocity_folder)
 			plt.savefig(plot_filename)
 			plt.clf()
 
@@ -285,6 +295,8 @@ def main(traffic_value, desire_value, flipped):
 			plt.xlabel("Y Position")
 			plt.ylabel("X Position")
 			plot_filename = os.path.join(position_folder, f"plot_{os.path.splitext(image)[0]}.png")
+			if not os.path.exists(position_folder):
+				os.makedirs(position_folder)
 			plt.savefig(plot_filename)
 			plt.clf()
 

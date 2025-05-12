@@ -1,0 +1,460 @@
+import numpy as np
+import pickle
+import cv2
+import sys
+
+from pixeltoworld import PixelToPoint
+
+class Pixel_2_world:
+    def __init__(self, height=0.7366, pitch_deg = 0, calib_file="calib.bin"):
+        self.valid = True
+        self.height = height
+        self.pitch_deg = pitch_deg
+
+        try:
+            with open(calib_file, "rb") as f:
+                zed_calibration_params = pickle.load(f)
+
+            self.fx = zed_calibration_params['fx']
+            self.fy = zed_calibration_params['fy']
+            self.cx = zed_calibration_params['cx']
+            self.cy = zed_calibration_params['cy']
+
+            print(f"[Pixel_2_world] Loaded calibration data: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}")
+
+        except (FileNotFoundError, pickle.UnpicklingError) as e:
+            print(f"[Pixel_2_world] Failed to load calibration data: {e}")
+            self.valid = False
+            self.fx = self.fy = self.cx = self.cy = None  # Optional: set to None for safety
+            
+    def rotate_ray(self,ray,pitch_deg):
+        pitch_rad = np.deg2rad(pitch_deg)
+        R = np.array([
+            [1, 0, 0],
+            [0, np.cos(pitch_rad), -np.sin(pitch_rad)],
+            [0, np.sin(pitch_rad), np.cos(pitch_rad)],
+        ])
+        return R @ ray
+    
+    def run(self,mid):
+        
+        if not self.valid:
+            return np.array([])
+        
+        
+        positions = []
+        
+        for v,row in enumerate(mid):
+            for u,value in enumerate(row):
+                if value:
+                    
+                    x_n = (u - self.cx) / self.fx
+                    y_n = (v - self.cy) / self.fy
+                    
+                    ray = np.array([x_n, y_n, 1.0])
+                    #ray = self.rotate_ray(ray,self.pitch_deg)
+                    
+                    t = -self.height / ray[2]
+                    x = ray[0] * t
+                    y = ray[1] * t
+                    positions.append([x,y])
+                    
+                    
+        print(positions)
+        return np.array(positions)
+
+def pix2point1(u, v):
+    k = np.array(([701.12, 0, 610.83],
+                 [0, 701.12, 380.3405],
+                 [0, 0, 1]))
+    
+    k_inv = np.linalg.inv(k)
+
+    r = np.array(([1, 0, 0, 0], 
+                 [0, 1, 0, 0],
+                 [0, 0, 1, 0.7366])), # height :)]))
+    
+    # equation: [u v 1] = k @ r @ [x y z 1]
+    # [x y z 1] = r_inv @ k_inv @ [u v 1]
+    r_inv = np.linalg.inv(r)    
+    k_inv = np.linalg.inv(k)    
+
+    res = k_inv @ r_inv @ np.array([u, v, 1, 1]) # height of 0
+
+    return res
+
+def pix2point2(u, v):
+    # Camera intrinsics
+    k = np.array([
+        [701.12, 0, 610.83],
+        [0, 701.12, 380.3405],
+        [0, 0, 1]
+    ])
+    k_inv = np.linalg.inv(k)
+    print(k_inv)
+
+    # Step 1: Create homogeneous pixel coordinate
+    pixel = np.array([u, v, 1])
+
+    # Step 2: Back-project to get ray direction in camera frame
+    ray = k_inv @ pixel  # shape (3,)
+
+    # Step 3: Assume camera height (point lies on ground)
+    H = 0.7366  # meters
+
+    # Step 4: Scale ray to reach ground plane (Y = -H, or positive if Y points down)
+    scale = H / ray[1]
+    point_cam = ray * scale  # 3D coordinates in camera frame
+
+    return point_cam  # (X, Y, Z) in camera frame
+
+def pix2point3(u, v):
+    # Camera intrinsics
+    k = np.array([[701.12, 0, 610.83],
+                  [0, 701.12, 380.3405],
+                  [0, 0, 1]])
+    k_inv = np.linalg.inv(k)
+
+    # Camera height and extrinsics (identity rotation, positioned at height 0.7366 on Z)
+    C = np.array([0, 0, 0.7366])  # Camera center in world coordinates
+    R = np.eye(3)  # No rotation
+    t = -R @ C.reshape(3, 1)
+
+    # Full projection matrix: P = K [R | t]
+    P = k @ np.hstack((R, t))
+
+    # Step 1: Convert pixel to normalized camera coordinates
+    pixel_h = np.array([u, v, 1])
+    ray_dir_cam = k_inv @ pixel_h  # direction in camera space
+
+    # Step 2: Transform ray direction to world space (R is identity here, so this is unnecessary)
+    ray_dir_world = ray_dir_cam / np.linalg.norm(ray_dir_cam)
+
+    # Step 3: Intersect with Z = 0 plane (ground)
+    # Ray origin = camera center
+    # Ray direction = ray_dir_world
+    # We want to solve: C + t * ray_dir_world = [X, Y, 0]
+
+    t_intersect = -C[2] / ray_dir_world[2]  # Solve for Z = 0
+    intersection = C + t_intersect * ray_dir_world
+
+    return intersection
+
+def pix2point4(u, v):
+    k = np.array(([701.12, 0, 610.83],
+                 [0, 701.12, 380.3405],
+                 [0, 0, 1]))
+    
+    k_inv = np.linalg.inv(k)
+
+    r = np.array(([1, 0, 0, 0], 
+                 [0, 1, 0, 0],
+                 [0, 0, 1, 0.7366]))  # height :)
+    
+    # equation: [u v 1] = k @ r @ [x y z 1]
+    # [x y z 1] = r_inv @ k_inv @ [u v 1]
+    
+    # We need to handle r carefully since it's a 3x4 matrix (not directly invertible)
+    # Split into rotation and translation components
+    r_rot = r[:, :3]  # 3x3 rotation matrix
+    r_trans = r[:, 3]  # translation vector
+    
+    r_rot_inv = np.linalg.inv(r_rot)
+    
+    # Calculate the ray direction in camera coordinates
+    uv1 = np.array([u, v, 1])
+    ray = k_inv @ uv1
+    
+    # Calculate where this ray intersects the ground plane (z=0)
+    # For ground plane, we know z=0, so we scale the ray to hit that plane
+    scale = -r_trans[2] / (r_rot_inv @ ray)[2]
+    
+    # Calculate the 3D point
+    res = scale * (r_rot_inv @ ray)
+    
+    return res
+        
+import cv2 as cv
+import numpy as np
+
+
+def pix2point5(u: float, v: float) -> np.ndarray:
+    """
+    Convert a single pixel (u, v) to a 3‑D point on the ground plane (Z = 0).
+
+    The camera intrinsics, distortion, pose, and height are baked in.  
+    Returns
+    -------
+    np.ndarray, shape (3,)
+        [X, Y, Z] in the world frame, with Z fixed to 0.
+    """
+
+    # ------------------------------------------------------------------
+    # 1. ***Hard‑coded calibration values*** – edit once, use everywhere
+    # ------------------------------------------------------------------
+    K = np.array([[701.12,   0.0, 610.83],
+                  [  0.0, 701.12, 380.3405],
+                  [  0.0,   0.0,   1.0 ]], dtype=np.float64)
+
+    dist_coeffs = np.array([-0.175609, 0.0273627, 0.000324635, 0.00135292, 0.0])  # k1, k2, p1, p2, k3
+
+    R_wc = np.eye(3, dtype=np.float64)    # world ← camera rotation
+    C_w  = np.array([0.0, 0.0, 0.7366])   # camera centre (x,y,z) in m
+    # ------------------------------------------------------------------
+
+    # 2. Undistort the pixel, then convert to a **ray in camera frame**
+    pts         = np.array([[[u, v]]], dtype=np.float64)      # (1,1,2)
+    pts_ud      = cv.undistortPoints(pts, K, dist_coeffs, P=K)
+    u_nd, v_nd  = pts_ud[0, 0]                                # normalized
+
+    x_cam = (u_nd - K[0, 2]) / K[0, 0]
+    y_cam = (v_nd - K[1, 2]) / K[1, 1]
+    ray_cam = np.array([x_cam, y_cam, 1.0])
+
+    # 3. Ray → world frame (R is orthonormal ⇒ R.T = R⁻¹)
+    ray_world = R_wc @ ray_cam
+    ray_world /= np.linalg.norm(ray_world)
+
+    # 4. Intersect that ray with the ground plane Z = 0
+    if abs(ray_world[2]) < 1e-12:
+        raise ValueError("Ray is parallel to ground plane – no intersection.")
+
+    lam = -C_w[2] / ray_world[2]          # depth along the ray
+    P_w = C_w + lam * ray_world
+    # P_w[2] = 0.0                          # enforce exact planarity
+
+    return P_w
+
+def pix2point6(u, v):
+    # releveant formula:
+    '''
+    Z = depth value of the pixel (u,v) from the depth map
+    X = (( u - c_x) * Z) / (f_x)
+    Y = (( v - c_y) * Z) / (f_y)
+    '''
+
+    k = np.array(([701.12, 0, 610.83],
+                 [0, 701.12, 380.3405],
+                 [0, 0, 1]))
+
+    # hfov, vfov
+    # fomrula: fov = 2*arctan(pixelNumber/(2*focalLength)) * (180/pi)(*)
+    # we using 1280x720
+    hfov = 2 * np.arctan(1280 / (2 * 701.12)) # * (180 / np.pi)
+    vfov = 2 * np.arctan(720 / (2 * 701.12)) # * (180 / np.pi)
+
+    print(f"hfov: {hfov}, vfov: {vfov}")
+
+    # now, project the vector.
+    # scalings: 
+    # 1. height. if u = 1280, then vector is down at same rate as -VFOV/2
+    # 2. width. if v = 720, then vector is left at same rate as -HFOV/2
+    # linear scaling.
+
+    if (u < 720 / 2):
+        print("this is shooting up into the air bruh")
+        return np.array([0, 0, 0])
+    
+    vscaling = (u - 720/2) / (720 / 2)
+    hscaling = (v - 1280/2) / (1280 / 2)
+    vangle = -(vscaling * vfov) / 2
+    hangle = (hscaling * hfov) / 2
+    H = 0.7366
+    delta_forward = H / np.tan(vangle)
+    delta_side = H * np.tan(hangle) # * np.sign(hscaling)
+    print(f"vscaling: {vscaling}, hscaling: {hscaling}")
+    print(f"vangle: {vangle}, hangle: {hangle}")
+    print(f"delta_forward: {delta_forward}, delta_side: {delta_side}")
+
+def pix2point7(u, v):
+    K = np.array([[701.12, 0, 610.83],
+                  [0, 701.12, 380.3405],
+                  [0, 0, 1]])
+
+    # camera centre (world) and height
+    C_w = np.array([0.0, 0.0, 0.7366])
+    R_wc = np.eye(3)        # adjust when you pitch/roll the camera
+
+    ray_cam = np.linalg.inv(K) @ np.array([v, u, 1.0])
+    ray_world = R_wc @ ray_cam
+
+    if abs(ray_world[2]) < 1e-6:
+        raise ValueError("Ray parallel to ground plane")
+
+    lam = -C_w[2] / ray_world[2]
+    P_w = C_w + lam * ray_world
+    P_w[2] = 0.0
+    return P_w
+
+def _rotation_cam_to_world(pitch_deg: float) -> np.ndarray:
+    """
+    Build the 3×3 rotation that maps camera axes
+    (x→right, y→down, z→forward)
+    into a world frame (X→forward, Y→left, Z→up)
+    with an additional downward pitch.
+    """
+    # camera -> intermediate world (level camera)
+    R0 = np.array([[ 0,  0,  1],
+                   [-1,  0,  0],
+                   [ 0, -1,  0]], dtype=np.float64)
+
+    # extra pitch about camera x‑axis (positive = nose down)
+    ϕ = np.deg2rad(pitch_deg)
+    Rx = np.array([[1,     0,      0],
+                   [0,  np.cos(ϕ), -np.sin(ϕ)],
+                   [0,  np.sin(ϕ),  np.cos(ϕ)]], dtype=np.float64)
+
+    return R0 @ Rx          # first pitch, then map axes
+
+def pix2point8(u_row: float,
+               v_col: float) -> np.ndarray:
+    """
+    Map an undistorted pixel (row, col) to a 3‑D point on the ground plane (Z = 0).
+
+    Calibration (hard‑coded)
+    ------------------------
+    • Intrinsics after rectification
+        fx = fy = 701.12,  cx = 610.83,  cy = 380.3405
+    • Optical centre height: 0.7366 m above the ground plane
+    • World frame:
+          X → forward, Y → left, Z → up
+      Camera frame:
+          x_cam → right, y_cam → down, z_cam → forward
+      Rotation camera→world (level camera) is therefore:
+
+            R_wc = [[ 0,  0,  1],
+                     [-1,  0,  0],
+                     [ 0, -1,  0]]
+
+    Parameters
+    ----------
+    u_row : float
+        Pixel row index (Y) in the *undistorted* image.
+    v_col : float
+        Pixel column index (X) in the *undistorted* image.
+
+    Returns
+    -------
+    np.ndarray, shape (3,)
+        (X, Y, Z) coordinates in metres, with Z ≡ 0.
+    """
+
+    # --- 1. intrinsics ---
+    K = np.array([[701.12,   0.0, 610.83],
+                  [  0.0, 701.12, 380.3405],
+                  [  0.0,   0.0,   1.0 ]], dtype=np.float64)
+    K_inv = np.linalg.inv(K)
+
+    # --- 2. camera-to‑world rotation (level camera) ---
+    R_wc = _rotation_cam_to_world(-3.25)  # pitch in degrees
+
+    # --- 3. camera optical centre in world coords ---
+    C_w = np.array([0.0, 0.0, 0.7366], dtype=np.float64)
+
+    # ------------------------------------------------------------------
+    # Pixel → ray in camera frame
+    ray_cam = K_inv @ np.array([v_col, u_row, 1.0])
+
+    # Ray → world frame
+    ray_world = R_wc @ ray_cam
+
+    # Intersect with ground plane (Z = 0)
+    if abs(ray_world[2]) < 1e-9:
+        raise ValueError("Ray is parallel to the ground plane.")
+    lam = -C_w[2] / ray_world[2]
+    P_w = C_w + lam * ray_world
+    P_w[2] = 0.0                    # enforce exact planarity
+
+    return P_w
+
+
+
+
+    
+if __name__ == "__main__":
+    calib_file = "calib.bin"
+    with open(calib_file, "rb") as f:
+        zed_calibration_params = pickle.load(f)
+        print(zed_calibration_params)
+        # exit(0)
+
+        fx = zed_calibration_params['fx']
+        fy = zed_calibration_params['fy']
+        cx = zed_calibration_params['cx']
+        cy = zed_calibration_params['cy']
+
+        k = [zed_calibration_params['k1'], zed_calibration_params['k2'], zed_calibration_params['p1'], zed_calibration_params['p2'], zed_calibration_params['k3']]
+        # print(f"fx: {fx}, fy: {fy}, cx: {cx}, cy: {cy}")
+    pixel_2_world = PixelToPoint(
+        fx=fx,
+        fy=fy,
+        cx=cx,
+        cy=cy,
+        dist_coeffs=k,
+        camera_height=0.7366,
+    )
+
+    args = sys.argv
+    # if arg is "nocam", then look at next two args for u,v
+    if len(args) > 1 and args[1] == "nocam":
+        u = int(args[2])
+        v = int(args[3])
+        print(f"u: {u}, v: {v}")
+        # print(pix2point1(u, v))
+        # print(pix2point2(u, v))
+        # print(pix2point3(u, v))
+        # print(pix2point4(u, v))
+        # print(pix2point5(u, v))
+        print(pix2point6(u, v))
+        exit(0)
+
+    
+    # instantiate UVC cam (opencv camera)
+    cap = cv2.VideoCapture(1)
+    # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+
+    # take a picture
+    ret, frame_old = cap.read()
+
+    # undistort each half
+    frame_left, frame_right = frame_old[:, :frame_old.shape[1] // 2], \
+                              frame_old[:, frame_old.shape[1] // 2:]
+    
+    # undistort
+    k.pop()
+    frame_left = cv2.resize(frame_left, (1280, 720))
+    frame = cv2.undistort(frame_left, np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]]), np.array(k))
+
+    # put side by side, save
+    cv2.imwrite("distort_comparison.png", np.hstack((frame_left, frame)))
+
+    # take left half ONLY
+    # frame = frame[:, :frame.shape[1] // 2]
+    # print(frame.shape)
+    # resize to 1280x720
+    ## frame = cv2.resize(frame, (1280, 720))
+
+    # allow user to choose point
+    if ret:
+        # Show the frame and let user click a point
+        def click_event(event, x, y, flags, param):
+            if event == cv2.EVENT_LBUTTONDOWN:
+                # positions = pixel_2_world.run(np.array((y, x)))
+                print(f"Clicked pixel: ({x}, {y})")
+                # print(f"World position: {positions}")
+                # print("...")
+                # print(pix2point1(y, x))
+                # print(pix2point2(y, x))
+                # print(pix2point3(y, x))
+                # print(pix2point4(y, x))
+                # print(pix2point5(y, x))
+                # print(pix2point6(y, x))
+                # print(pix2point7(y, x))
+                print(pix2point8(y, x))
+                cv2.destroyAllWindows()
+
+        cv2.imshow("Select a point", frame)
+        cv2.setMouseCallback("Select a point", click_event)
+        cv2.waitKey(0)
+    else:
+        print("Failed to capture image from camera.")

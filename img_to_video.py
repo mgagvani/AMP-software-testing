@@ -1,11 +1,12 @@
 import cv2
 import os
 import glob
+import tqdm
 
 
 def img_to_video(traffic_value, desire_value, flipped):
     # Paths to images
-    original_images_folder = "data/images/"  # Folder with original images
+    original_images_folder = "../Data 2024-10-26-15-29-40/images/"  # Folder with original images
     if flipped:
         # plot_images_folder = f"data_flipped/plot_images_{traffic_value}_{desire_value}/"
         output_video = f"video_flipped_{traffic_value}_{desire_value}.mp4"
@@ -47,7 +48,7 @@ def img_to_video(traffic_value, desire_value, flipped):
     out = cv2.VideoWriter(output_video, fourcc, fps, (frame_width, frame_height))
 
     # Process images and save to video
-    for orig_path, velocity_path, position_path in zip(original_images[1:len(original_images) + 1], velocity_images, position_images):
+    for orig_path, velocity_path, position_path in tqdm.tqdm(zip(original_images[1:len(original_images) + 1], velocity_images, position_images)):
         orig_frame = cv2.imread(orig_path)
         if flipped:
             orig_frame = cv2.flip(orig_frame, 1)
